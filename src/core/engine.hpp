@@ -9,7 +9,7 @@ class BeatClock {
     Shared& state;PulseScheduler scheduler;SampleRing<131072> ring;
     HANDLE stopEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr),dataEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     std::thread worker;size_t untilWake=0;std::atomic<uint64_t> sourceBase{0};
-    std::mutex configuration;double requestedBpm=0,requestedRate=1;bool requestedLocal=false;
+    std::mutex configuration;double requestedBpm=0,requestedRate=1;bool requestedLocal=false,requestedWarmTempo=false;
     void run(){
         try{
             std::unique_ptr<BeatNetwork> network;std::unique_ptr<BeatFeatures> features;BeatPeaks peaks;
@@ -26,8 +26,8 @@ class BeatClock {
             for(;;){
                 DWORD wait=WaitForMultipleObjects(2,events,FALSE,INFINITE);if(wait==WAIT_OBJECT_0)break;
                 if(wait==WAIT_FAILED)throw std::runtime_error("Fallo al esperar el audio del reloj");
-                double bpm=0,rate=1;int version;bool estimate=false;
-                {std::lock_guard<std::mutex> lock(configuration);bpm=requestedBpm;rate=requestedRate;estimate=requestedLocal;version=state.tempoGeneration.load();}
+                double bpm=0,rate=1;int version;bool estimate=false,warmTempo=false;
+                {std::lock_guard<std::mutex> lock(configuration);bpm=requestedBpm;rate=requestedRate;estimate=requestedLocal;warmTempo=requestedWarmTempo;version=state.tempoGeneration.load();}
                 if(estimate&&state.localTempoReady.load())bpm=state.localTempoBpm.load();
                 if(!state.beatEnabled.load()||(!estimate&&effectiveTempo(bpm,rate)<=0)){
                     ring.discard();scheduler.update({},state.generation.load(),state.relearn.load(),version);
@@ -35,7 +35,11 @@ class BeatClock {
                 }
                 if(!network){network=std::make_unique<BeatNetwork>(state.modelDirectory+L"\\beatnet.onnx");features=std::make_unique<BeatFeatures>();generation=-1;state.beatModelState=1;}
                 if(generation!=state.generation.load()||relearn!=state.relearn.load()||tempo!=version){
-                    generation=state.generation.load();relearn=state.relearn.load();tempo=version;clear();motor.setTempoBpm(effectiveTempo(bpm,rate));}
+                    bool keep=warmTempo&&generation==state.generation.load()&&relearn==state.relearn.load();
+                    generation=state.generation.load();relearn=state.relearn.load();tempo=version;
+                    if(keep){scheduler.update({},generation,relearn,tempo);local.reset();}
+                    else clear();
+                    motor.setTempoBpm(effectiveTempo(bpm,rate),keep);}
                 if(!state.running.load()||nowMs()-state.lastPacket.load()>300){motor.suspend();scheduler.update({},generation,relearn,tempo);continue;}
                 if(ring.size()>size_t(std::max(8000,state.rate.load()))/3){++state.overflows;clear();continue;}
                 float sample;
@@ -57,7 +61,7 @@ class BeatClock {
                     if(measured.ready&&measured.updated){
                         bool refining=state.localTempoReady.load();bpm=measured.bpm/rate;
                         if(refining){motor.refineTempoBpm(measured.bpm,audioTime);++state.localTempoRefinements;}
-                        else{motor.setTempoBpm(measured.bpm);state.pulseDivision=musicalPulseDivision(measured.bpm,PulseMode(state.pulseMode.load()));}
+                        else{motor.setTempoBpm(measured.bpm,true);state.pulseDivision=musicalPulseDivision(measured.bpm,PulseMode(state.pulseMode.load()));}
                         state.localTempoBpm=bpm;state.catalogBpm=bpm;state.effectiveBpm=measured.bpm;state.beatInterval=beatIntervalMs(measured.bpm);state.localTempoConfidence=measured.confidence;state.localTempoReady=true;state.notify();
                     }
                 }
@@ -81,6 +85,7 @@ public:
         double effective=effectiveTempo(bpm,rate);if(effective<=0){bpm=0;rate=1;}
         std::lock_guard<std::mutex> lock(configuration);
         if(!requestedLocal&&std::abs(bpm-requestedBpm)<1e-8&&std::abs(rate-requestedRate)<1e-8&&state.beatEnabled.load()==(effective>0))return;
+        requestedWarmTempo=requestedLocal&&effective>0;
         state.beatEnabled=false;int version=++state.tempoGeneration;
         requestedLocal=false;state.localTempoMode=false;state.localTempoReady=false;state.localTempoBpm=0;
         state.localTempoRefinements=0;state.localTempoConfidence=0;
@@ -92,7 +97,7 @@ public:
     }
     void useLocalTempo(double rate=1){
         std::lock_guard<std::mutex> lock(configuration);if(requestedLocal&&std::abs(requestedRate-rate)<1e-8)return;
-        state.beatEnabled=false;int version=++state.tempoGeneration;requestedBpm=0;requestedRate=rate;requestedLocal=true;
+        state.beatEnabled=false;int version=++state.tempoGeneration;requestedBpm=0;requestedRate=rate;requestedLocal=true;requestedWarmTempo=false;
         state.localTempoMode=true;state.localTempoReady=false;state.localTempoBpm=0;state.catalogBpm=0;state.effectiveBpm=0;state.beatInterval=0;state.pulseIntervalMs=0;state.playbackRate=rate;
         state.localTempoRefinements=0;state.localTempoConfidence=0;
         state.beatPhaseLocked=false;state.phaseProvisional=false;state.lastHit=0;state.trackingState=int(TrackingState::Learning);state.beatEnabled=true;

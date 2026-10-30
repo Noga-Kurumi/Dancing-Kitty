@@ -35,6 +35,14 @@ int main(){
         motor.setTempoBpm(90);check(!motor.phaseLocked(),"Tempo change retains phase");motor.reset();check(motor.tempoBpm()==90,"Reset forgot catalogue BPM");
         motor.setTempoBpm(0);for(int t=0;t<7000;t+=10){if(t%500==0)motor.beat(t,.9f);motor.advance(t,true,true);}
         check(!motor.prediction().valid,"Audio inferred a tempo without catalogue BPM");
+        motor.setTempoBpm(120,true);motor.advance(7000,true,true);
+        check(motor.phaseLocked()&&motor.phaseEvidence()>=8,"Resolving local BPM discards the already learned beat phase");
+        motor.setTempoBpm(119.9,true);motor.advance(7010,true,true);
+        check(motor.phaseLocked()&&motor.phaseEvidence()>=8,"A catalogue result discards warm rhythmic observations");
+        PhaseClock staleWarm;
+        for(int i=0;i<8;++i)staleWarm.beat(i*500.,.95f);
+        staleWarm.advance(20000,true,true);staleWarm.setTempoBpm(120,true);staleWarm.advance(20000,true,true);
+        check(!staleWarm.prediction().valid,"A delayed BPM reused expired observations");
         PhaseClock sparse;sparse.setTempoBpm(120);
         for(int t=0;t<7000;t+=10){if(t>=250&&(t-250)%1000==0)sparse.beat(t,.9f);sparse.advance(t,true,true);}
         check(sparse.phaseLocked()&&sparse.prediction().valid&&std::abs(sparse.beatPeriod()-500)<1e-8,"Sparse drums replaced the known tempo");

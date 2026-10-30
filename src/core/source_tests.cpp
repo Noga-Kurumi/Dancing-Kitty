@@ -4,6 +4,9 @@ void check(bool value,const char* message){if(!value)throw std::runtime_error(me
 int main(){
     try{
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        check(kp::catalogTimeout(10000,1000)==3000&&kp::catalogTimeout(1234,1200)==34,"A request can exceed the remaining provider budget");
+        bool timedOut=false;try{kp::catalogTimeout(1000,1000);}catch(const kp::OperationTimedOut&){timedOut=true;}
+        check(timedOut,"Expired provider budget starts another network operation");
         kp::TrackMetadata track{L"Song",L"Artist",L"Album",180};kp::CandidateSelection selected;selected.confidence=.95;
         kp::CatalogCandidate entry;entry.id=L"recording-a";entry.title=L"Song";entry.artist=L"Artist";selected.candidates.push_back(entry);
         auto parse=[](const wchar_t* value){return kp::json::JsonObject::Parse(value);};

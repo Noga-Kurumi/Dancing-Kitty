@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0
+
+- Start local tempo learning alongside catalog requests, with bounded provider timeouts.
+- Reuse collected rhythm observations when local/catalog BPM becomes available, preserving the same confidence requirements.
+- Add an eight-frame gray dotted loading indicator on the forehead while waiting for BPM.
+- Play at a standard 25 fps, hold frame 10 until the next beat, and accelerate only for short beat intervals. Remove slow-song halfway loops.
+- Reinforce the topmost position on foreground-window changes without stealing focus or adding polling.
+
 ## 1.0.0
 
 First public Windows x64 release.

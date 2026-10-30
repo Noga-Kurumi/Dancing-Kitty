@@ -4,6 +4,8 @@
 #include "i18n.hpp"
 #include "startup.hpp"
 #include "tray_icon.hpp"
+#include "loading_indicator.hpp"
+#include "topmost_guard.hpp"
 #include <windows.h>
 #include <windowsx.h>
 #include <wincodec.h>
@@ -40,6 +42,7 @@ class Sprites {
     ComPtr<IWICImagingFactory> factory;
     HDC dc=CreateCompatibleDC(nullptr);HGDIOBJ stock=nullptr;
     std::vector<Frame> frames;
+    std::vector<uint8_t> loadingBackup;
     std::array<ComPtr<IWICBitmap>,10> originals;
     catpulse::NormalizedBounds visible;
     void prepare(int index){
@@ -86,10 +89,11 @@ public:
     void resize(int side){
         SelectObject(dc,stock);frames.clear();width=height=std::clamp(side,96,1000);frames.resize(10);
     }
-    void draw(HWND window,int frame){
+    void draw(HWND window,int frame,int loading=-1){
         prepare(frame);SelectObject(dc,frames.at(size_t(frame)).bitmap);SIZE size{width,height};POINT source{};
         BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
-        if(!UpdateLayeredWindow(window,nullptr,nullptr,&size,dc,&source,0,&blend,ULW_ALPHA))throw std::runtime_error("No se pudo mostrar el gato transparente.");
+        auto submit=[&](){if(!UpdateLayeredWindow(window,nullptr,nullptr,&size,dc,&source,0,&blend,ULW_ALPHA))throw std::runtime_error("No se pudo mostrar el gato transparente.");};
+        if(loading>=0){catpulse::LoadingOverlay overlay(frames[size_t(frame)].pixels,width,loading,loadingBackup);submit();}else submit();
     }
     bool hit(int frame,int x,int y)const{
         return corner(x,y)!=catpulse::Corner::None||
@@ -114,14 +118,14 @@ class Application {
     std::wstring images,positionFile;
     catpulse::StartupEntry startup{directoryOfExecutable()+L"\\"+catpulse::ExecutableName};
     std::unique_ptr<kp::BeatEngine> engine;
-    Sprites sprites;catpulse::AnimationClock animation{clockMs()};Handle timer;
-    HWND window=nullptr;catpulse::TrayIcon tray;int shown=-1;bool dragging=false;POINT cursorStart{},windowStart{};
+    Sprites sprites;catpulse::AnimationClock animation{clockMs()};catpulse::LoadingClock loadingClock;Handle timer;
+    HWND window=nullptr;catpulse::TrayIcon tray;catpulse::TopmostGuard front;int shown=-1,loadingFrame=-1;bool dragging=false;POINT cursorStart{},windowStart{};
     catpulse::Corner resizeCorner=catpulse::Corner::None;int startSide=260;UINT dpi=96;
     std::ofstream diagnostic;Resources resources;double lastLog=-1e9;
     void savePosition(){RECT r;GetWindowRect(window,&r);std::wstring x=std::to_wstring(r.left),y=std::to_wstring(r.top);
         WritePrivateProfileStringW(L"Position",L"x",x.c_str(),positionFile.c_str());WritePrivateProfileStringW(L"Position",L"y",y.c_str(),positionFile.c_str());
         std::wstring side=std::to_wstring(sprites.width);WritePrivateProfileStringW(L"Position",L"size",side.c_str(),positionFile.c_str());}
-    void redraw(){if(shown>=0)sprites.draw(window,shown);}
+    void redraw(){if(shown>=0)sprites.draw(window,shown,loadingFrame);}
     void menu(POINT cursor,bool fromTray=false){
         if(dragging){dragging=false;ReleaseCapture();savePosition();}
         const auto& text=catpulse::uiStrings();bool enabled=startup.enabled();HMENU popup=CreatePopupMenu();
@@ -144,7 +148,9 @@ class Application {
             <<",\"playing\":"<<state.playerPlaying<<",\"bMusic\":"<<state.bMusic<<",\"pulses\":"<<state.beatCount
             <<",\"last_pulse_ms\":"<<state.lastBeatQpcMs<<",\"next_pulse_ms\":"<<state.nextPulseQpcMs<<",\"period_ms\":"<<state.pulseIntervalMs
             <<",\"phase_locked\":"<<state.beatPhaseLocked<<",\"finishing\":"<<animation.finishingLoop()<<",\"parked\":"<<animation.stopped()
-            <<",\"loops_per_pulse\":"<<animation.loopsPerPulse()
+            <<",\"loading\":"<<(loadingFrame>=0)<<",\"loading_frame\":"<<loadingFrame
+            <<",\"bpm\":"<<state.effectiveBpm<<",\"bpm_estimated\":"<<state.catalog.estimated
+            <<",\"lookup_state\":"<<int(state.lookupState)<<",\"front_guard\":"<<front.listening()
             <<",\"tray_registered\":"<<tray.registered()<<",\"tool_window\":"<<bool(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_TOOLWINDOW)
             <<",\"app_window\":"<<bool(GetWindowLongPtrW(window,GWL_EXSTYLE)&WS_EX_APPWINDOW)
             <<",\"cpu_total_percent\":"<<resources.cpu<<",\"ram_mb\":"<<resources.ram
@@ -153,9 +159,11 @@ class Application {
     void refresh(){
         auto state=engine->status();double now=clockMs();
         catpulse::Rhythm rhythm{state.playerPlaying&&state.bMusic,state.lastBeatQpcMs,state.pulseIntervalMs,state.pulseScheduleValid?state.nextPulseQpcMs:0};
-        int frame=animation.update(now,rhythm);bool changed=frame!=shown;
-        if(changed){shown=frame;redraw();}log(state,clockMs(),changed);
-        double next=animation.nextFrameTime();
+        int frame=animation.update(now,rhythm);
+        int spinner=loadingClock.update(now,state.playerPlaying&&state.bMusic&&state.effectiveBpm<=0&&state.lookupState!=kp::MusicLookupState::Error);
+        bool changed=frame!=shown||spinner!=loadingFrame;
+        if(changed){shown=frame;loadingFrame=spinner;redraw();}log(state,clockMs(),changed);
+        double next=std::min(animation.nextFrameTime(),loadingClock.nextFrameTime(now));
         if(std::isfinite(next)){LARGE_INTEGER due;due.QuadPart=-std::max<LONGLONG>(1,LONGLONG(std::ceil((next-clockMs())*10000)));
             if(!SetWaitableTimer(timer.value,&due,0,nullptr,nullptr,FALSE))throw std::runtime_error("No se pudo programar la animación.");}
         else CancelWaitableTimer(timer.value);
@@ -163,6 +171,9 @@ class Application {
     LRESULT message(UINT id,WPARAM w,LPARAM l){
         if(tray.taskbarCreated&&id==tray.taskbarCreated){tray.install(window,reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window,GWLP_HINSTANCE)));return 0;}
         switch(id){
+        case catpulse::TopmostGuard::Message:front.raise();return 0;
+        case WM_WINDOWPOSCHANGING:{auto position=reinterpret_cast<WINDOWPOS*>(l);
+            if(!(position->flags&SWP_NOZORDER))position->hwndInsertAfter=HWND_TOPMOST;break;}
         case catpulse::TrayIcon::Message:{
             UINT event=tray.usesModernEvents()?LOWORD(l):UINT(l);
             if(event==WM_CONTEXTMENU||event==NIN_SELECT||event==NIN_KEYSELECT||(!tray.usesModernEvents()&&(event==WM_RBUTTONUP||event==WM_LBUTTONUP))){
@@ -191,7 +202,7 @@ class Application {
         case WM_DISPLAYCHANGE:{RECT r;GetWindowRect(window,&r);MONITORINFO m{};m.cbSize=sizeof(m);GetMonitorInfoW(MonitorFromRect(&r,MONITOR_DEFAULTTONEAREST),&m);
             if(r.right<m.rcWork.left+32||r.left>m.rcWork.right-32||r.bottom<m.rcWork.top+32||r.top>m.rcWork.bottom-32)
                 SetWindowPos(window,HWND_TOPMOST,m.rcWork.right-sprites.width-24,m.rcWork.bottom-sprites.height-24,0,0,SWP_NOSIZE|SWP_NOACTIVATE);return 0;}
-        case WM_DESTROY:tray.remove();PostQuitMessage(0);return 0;
+        case WM_DESTROY:front.stop();tray.remove();PostQuitMessage(0);return 0;
         }
         return DefWindowProcW(window,id,w,l);
     }
@@ -226,6 +237,7 @@ public:
         tray.install(window,instance);
         animation=catpulse::AnimationClock(clockMs());refresh();
         ShowWindow(window,SW_SHOWNOACTIVATE);SetWindowPos(window,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+        front.start(window);
         engine->start();
         startup.updateExisting();
         // This ten-frame visual follows every original beat. The engine's

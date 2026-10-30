@@ -1,8 +1,8 @@
 #include <windows.h>
 101 ICON "cat_icon.ico"
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 1,1,0,0
+PRODUCTVERSION 1,1,0,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0
 FILEOS VOS_NT_WINDOWS32
@@ -16,8 +16,8 @@ BEGIN
             VALUE "ProductName", "Dancing Kitty\0"
             VALUE "InternalName", "DancingKitty\0"
             VALUE "OriginalFilename", "Dancing Kitty.exe\0"
-            VALUE "FileVersion", "1.0.0\0"
-            VALUE "ProductVersion", "1.0.0\0"
+            VALUE "FileVersion", "1.1.0\0"
+            VALUE "ProductVersion", "1.1.0\0"
         END
     END
     BLOCK "VarFileInfo"

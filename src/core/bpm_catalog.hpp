@@ -17,6 +17,10 @@ namespace json=winrt::Windows::Data::Json;
 namespace http=winrt::Windows::Web::Http;
 namespace filters=winrt::Windows::Web::Http::Filters;
 struct BpmLookupCompletion {uint64_t token=0;BpmResult result;};
+inline DWORD catalogTimeout(double deadline,double now){
+    if(deadline<=now)throw OperationTimedOut();
+    return DWORD(std::clamp(std::ceil(deadline-now),1.,3000.));
+}
 
 inline BpmResult selectAcousticFeatures(const TrackMetadata& track,const CandidateSelection& selected,const json::JsonObject& features){
     BpmResult result;double chosen=0;
@@ -38,7 +42,7 @@ inline BpmResult selectAcousticFeatures(const TrackMetadata& track,const Candida
 }
 
 class BpmCatalog {
-    struct Job {uint64_t token;TrackMetadata track;std::shared_ptr<EventHandle> canceled=std::make_shared<EventHandle>(true);};
+    struct Job {uint64_t token;TrackMetadata track;std::shared_ptr<EventHandle> canceled=std::make_shared<EventHandle>(true);double deadline=0;};
     struct CacheEntry {BpmResult result;double expires=0;};
     EventHandle stopEvent{true},workEvent;
     HANDLE notify;std::mutex mutex;
@@ -72,10 +76,13 @@ class BpmCatalog {
         if(WaitForSingleObject(job.canceled->value,0)==WAIT_OBJECT_0)throw OperationCanceled();
         double minimum=host==L"https://musicbrainz.org"?1100:250;
         auto delay=DWORD(std::max(0.,minimum-(nowMs()-lastRequest[host])));
-        HANDLE waits[]={stopEvent.value,job.canceled->value};if(delay&&WaitForMultipleObjects(2,waits,FALSE,delay)!=WAIT_TIMEOUT)throw OperationCanceled();
+        HANDLE waits[]={stopEvent.value,job.canceled->value};if(delay&&WaitForMultipleObjects(2,waits,FALSE,std::min(delay,catalogTimeout(job.deadline,nowMs())))!=WAIT_TIMEOUT)throw OperationCanceled();
+        auto budget=[&](){return catalogTimeout(job.deadline,nowMs());};
+        budget();
         lastRequest[host]=nowMs();
         if(requestCounter)++*requestCounter;
-        auto response=awaitResult(client.GetAsync(winrt::Windows::Foundation::Uri(host+path),http::HttpCompletionOption::ResponseHeadersRead),stopEvent.value,job.canceled->value);
+        auto timeout=budget();
+        auto response=awaitResult(client.GetAsync(winrt::Windows::Foundation::Uri(host+path),http::HttpCompletionOption::ResponseHeadersRead),stopEvent.value,job.canceled->value,timeout);
         auto status=uint32_t(response.StatusCode());
         if(status==429){
             double seconds=60;winrt::hstring header;
@@ -86,10 +93,10 @@ class BpmCatalog {
         if(status!=200)throw std::runtime_error("El catalogo no esta disponible para una consulta anonima (HTTP "+std::to_string(status)+")");
         auto contentType=response.Content().Headers().ContentType();
         if(!contentType||contentType.MediaType()!=L"application/json")throw std::runtime_error("El catalogo no devolvio una respuesta JSON");
-        auto stream=awaitResult(response.Content().ReadAsInputStreamAsync(),stopEvent.value,job.canceled->value);
+        timeout=budget();auto stream=awaitResult(response.Content().ReadAsInputStreamAsync(),stopEvent.value,job.canceled->value,timeout);
         std::string bytes;
         for(;;){
-            auto buffer=awaitResult(stream.ReadAsync(winrt::Windows::Storage::Streams::Buffer(4096),4096,winrt::Windows::Storage::Streams::InputStreamOptions::Partial),stopEvent.value,job.canceled->value);
+            timeout=budget();auto buffer=awaitResult(stream.ReadAsync(winrt::Windows::Storage::Streams::Buffer(4096),4096,winrt::Windows::Storage::Streams::InputStreamOptions::Partial),stopEvent.value,job.canceled->value,timeout);
             if(!buffer.Length())break;
             if(bytes.size()+buffer.Length()>512*1024)throw std::runtime_error("La respuesta del catalogo excede el limite de datos");
             auto reader=winrt::Windows::Storage::Streams::DataReader::FromBuffer(buffer);
@@ -160,11 +167,13 @@ class BpmCatalog {
         if(cached!=cache.end()&&cached->second.expires>nowMs()){result=cached->second.result;result.fromCache=true;return result;}
         if(job.track.title.empty()||job.track.artist.empty()){result.reason=L"El reproductor no publico titulo y artista suficientes";return result;}
         std::vector<CatalogCandidate> verified;bool failed=false;
-        try{result=lookupDeezer(client,job,verified);}catch(const OperationCanceled&){throw;}
+        Job primaryJob=job;primaryJob.deadline=nowMs()+3000;
+        try{result=lookupDeezer(client,primaryJob,verified);}catch(const OperationCanceled&){throw;}
         catch(const winrt::hresult_error& e){failed=true;result.reason=std::wstring(e.message());}
         catch(const std::exception& e){failed=true;result.reason=wide(e.what());}
         if(!result.found){auto primary=result.reason;
-            try{result=lookupBrainz(client,job,verified);}catch(const OperationCanceled&){throw;}
+            Job fallback=job;fallback.deadline=nowMs()+4500;
+            try{result=lookupBrainz(client,fallback,verified);}catch(const OperationCanceled&){throw;}
             catch(const winrt::hresult_error& e){failed=true;result.reason=std::wstring(e.message());}
             catch(const std::exception& e){failed=true;result.reason=wide(e.what());}
             if(!result.found)result.reason=L"Deezer: "+primary+L"; alternativa MusicBrainz/AcousticBrainz: "+result.reason;
@@ -178,7 +187,7 @@ class BpmCatalog {
             winrt::init_apartment(winrt::apartment_type::multi_threaded);initialized=true;
             filters::HttpBaseProtocolFilter filter;filter.AllowAutoRedirect(false);filter.AllowUI(false);filter.CookieUsageBehavior(filters::HttpCookieUsageBehavior::NoCookies);
             filter.CacheControl().ReadBehavior(filters::HttpCacheReadBehavior::NoCache);filter.CacheControl().WriteBehavior(filters::HttpCacheWriteBehavior::NoCache);
-            http::HttpClient client(filter);client.DefaultRequestHeaders().TryAppendWithoutValidation(L"User-Agent",L"DancingKitty/1.0.0 (+https://github.com/Noga-Kurumi/Dancing-Kitty)");client.DefaultRequestHeaders().Accept().ParseAdd(L"application/json");
+            http::HttpClient client(filter);client.DefaultRequestHeaders().TryAppendWithoutValidation(L"User-Agent",L"DancingKitty/1.1.0 (+https://github.com/Noga-Kurumi/Dancing-Kitty)");client.DefaultRequestHeaders().Accept().ParseAdd(L"application/json");
             HANDLE waits[]={stopEvent.value,workEvent.value};
             while(WaitForMultipleObjects(2,waits,FALSE,INFINITE)==WAIT_OBJECT_0+1){
                 std::optional<Job> job;{std::lock_guard<std::mutex> lock(mutex);job=std::move(pending);pending.reset();if(job)active=job->canceled;}

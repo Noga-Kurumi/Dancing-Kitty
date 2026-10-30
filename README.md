@@ -6,7 +6,7 @@ A lightweight Windows desktop cat that dances to the rhythm of your music.
 
 ## Download
 
-Download **Dancing-Kitty-1.0.0-windows-x64.exe** from the [1.0.0 release](https://github.com/Noga-Kurumi/Dancing-Kitty/releases/tag/v1.0.0). It contains the application, ten animation frames, audio models and runtime dependencies. Run it without an installer or administrator privileges. A portable ZIP is also available.
+Download **Dancing-Kitty-1.1.0-windows-x64.exe** from the [1.1.0 release](https://github.com/Noga-Kurumi/Dancing-Kitty/releases/tag/v1.1.0). It contains the application, ten animation frames, audio models and runtime dependencies. Run it without an installer or administrator privileges. A portable ZIP is also available.
 
 The executable prepares a versioned cache under `%LOCALAPPDATA%\Dancing Kitty\`. Your saved position and size are kept separately in `position.ini`. On first upgrade it preserves the previous CatPulse settings.
 
@@ -24,7 +24,11 @@ Menus follow the Windows display language, with English fallback. Included trans
 
 Windows media-session events activate output-audio analysis when a compatible player starts. YAMNet gates music detection (`bMusic`), and BeatNet supplies rhythmic observations. Public Deezer and MusicBrainz/AcousticBrainz lookups can provide a matching recording's BPM. If none is available or the app is offline, the engine estimates tempo locally. No API key or account is required by the app.
 
-A sliding window continuously corrects phase. Catalog BPM stays fixed; local estimates can refine their tempo. Frame 1 aligns with each emitted pulse and the remaining frames fit the next interval. Slow pulses use two animation loops per pulse. When playback or music detection stops, the current loop finishes and the cat holds frame 10.
+A sliding window continuously corrects phase. Catalog BPM stays fixed; local estimates can refine their tempo. Local learning starts as soon as music is confirmed, alongside metadata/catalog requests. Each catalog attempt has a bounded total budget (3 seconds for Deezer, 4.5 seconds for MusicBrainz/AcousticBrainz); it cannot block local learning. Existing rhythmic observations are reused when BPM becomes available, avoiding a second phase-learning window. Confidence requirements are unchanged.
+
+While BPM is still unavailable, an eight-frame gray dotted spinner appears on the cat's forehead at 10 fps. It disappears as soon as a usable catalog or local BPM exists, or music stops.
+
+Frame 1 aligns with each emitted pulse. The animation runs at a standard 25 fps, reaches frame 10 and waits for the next beat. It only speeds up when the beat interval is too short to fit that stroke. Slow songs never create extra halfway loops or double their rhythm. When playback or music detection stops, the current stroke finishes and the cat holds frame 10.
 
 The engine detects the musical pulse, rather than identifying isolated kick drums. Intros, sparse rhythms and half/double-tempo ambiguity can require learning or cause provisional alignment. It does not promise perfect synchronization on every recording. Players without Windows media sessions do not activate this flow. The captured audio is the output mix, so unrelated sounds can affect the analysis.
 
@@ -40,8 +44,8 @@ Requires Windows x64, Visual Studio 2022 with **Desktop development with C++** a
 
 The script downloads the pinned ONNX Runtime 1.23.2 development package from NuGet, verifies its SHA-256, compiles Release, runs the six C++ regression tests and creates:
 
-- `dist/Dancing-Kitty-1.0.0-windows-x64.exe` — single-file launcher;
-- `dist/Dancing-Kitty-1.0.0-windows-x64.zip` — portable folder;
+- `dist/Dancing-Kitty-1.1.0-windows-x64.exe` — single-file launcher;
+- `dist/Dancing-Kitty-1.1.0-windows-x64.zip` — portable folder;
 - `dist/SHA256SUMS.txt` — checksums.
 
 The first run needs Internet only to obtain that build dependency. Existing installations can be supplied with `-OnnxRuntimeRoot`, `-CRuntimeRoot`, `-CMakeExecutable` and `-PythonExecutable`. The two checked-in ONNX models are used directly; PyTorch and TensorFlow are not build or runtime dependencies. See [model attribution](models/README.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
@@ -55,6 +59,8 @@ The first run needs Internet only to obtain that build dependency. Existing inst
 - `models`: the two runtime inference graphs.
 - `scripts`: reproducible packaging helpers.
 
-The production app uses event-driven waits, no continuously running UI refresh loop, one-time image decoding and lazy scaled-frame caching. Pausing stops audio capture after a short grace period. The tray uses native shell notifications and is restored after Explorer restarts.
+The production app uses event-driven waits, no continuously running UI refresh loop, one-time image decoding and lazy scaled-frame caching. The spinner repaints only while waiting for BPM, backing up/restoring just its small forehead rectangle. Pausing stops audio capture after a short grace period. The tray uses native shell notifications and is restored after Explorer restarts. A foreground-window event hook reasserts the cat's topmost position without activating it or polling other applications.
 
 For explicit diagnostics, `--diagnostics PATH.jsonl` records states and animation timing. Normal runs do not write diagnostic logs. The saved size is loaded at every startup, including login startup. Existing placement is constrained only enough to keep the cat reachable after a display configuration change.
+
+See [1.1.0 validation](docs/validation-1.1.0.md) for the full-recording replay comparison and the limits of those measurements.

@@ -26,7 +26,7 @@ int wmain(int argc,wchar_t** argv){
             beat.push(sample,[&](float v){feat.push(v,[&](auto f,int64_t frame,float rms){std::array<float,3> p{};if(rms>1e-6f)p=net.process(f);peaks.push(p[0]+p[1],frame*20.,[&](double t,float confidence){motor.beat(t,confidence);if(localMode)localTempo.observe(t,confidence);log<<"beat,"<<t/1000<<','<<confidence<<",0\n";});});});
             if(i%std::max(1u,rate/100)==0){double t=i*1000./rate;
                 if(localMode){auto estimated=localTempo.advance(t);if(estimated.ready&&estimated.updated){
-                    if(tempoReady)motor.refineTempoBpm(estimated.bpm,t);else{motor.setTempoBpm(estimated.bpm);division=musicalPulseDivision(estimated.bpm,pulseMode);}
+                    if(tempoReady)motor.refineTempoBpm(estimated.bpm,t);else{motor.setTempoBpm(estimated.bpm,true);division=musicalPulseDivision(estimated.bpm,pulseMode);}
                     log<<(tempoReady?"tempo_update,":"tempo,")<<t/1000<<','<<estimated.bpm<<','<<estimated.confidence<<'\n';tempoReady=true;}}
                 motor.advance(t,true,true);
                 division=localMode?refinedPulseDivision(motor.tempoBpm(),pulseMode,division):musicalPulseDivision(motor.tempoBpm(),pulseMode);

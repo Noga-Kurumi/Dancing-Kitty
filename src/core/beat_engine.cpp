@@ -35,7 +35,9 @@ struct BeatEngine::Impl {
     bool confirmedMusic()const{return shared.transportPlaying.load()&&shared.running.load()&&shared.bMusic.load()&&shared.classifiedGeneration.load()==shared.generation.load();}
     void fallbackLocal(double rate,const std::wstring& reason){
         if(clock)clock->useLocalTempo(rate);
-        std::lock_guard<std::mutex> lock(statusMutex);current.lookupState=MusicLookupState::EstimatingBpm;current.catalog={};current.catalog.reason=reason;
+        std::lock_guard<std::mutex> lock(statusMutex);
+        if(!current.catalog.found){current.lookupState=MusicLookupState::EstimatingBpm;current.catalog={};}
+        current.catalog.reason=reason;
     }
     void clearTrack(MusicLookupState state,const PlaybackSnapshot& playback){
         if(clock)clock->setTempo(0);
@@ -150,16 +152,19 @@ struct BeatEngine::Impl {
                 }
                 wasMusic=true;
                 if(!metadataAttempted){
+                    // Estimate from existing audio while metadata and public
+                    // providers run. Network latency never delays local learning.
+                    if(clock)clock->useLocalTempo(playback.playbackRate);
                     metadataAttempted=true;
                     {std::lock_guard<std::mutex> lock(statusMutex);current.lookupState=MusicLookupState::ReadingMetadata;}
                     TrackMetadata track;
                     try{track=watcher.metadata(playback,stopEvent.value);}
-                    catch(const OperationCanceled&){continue;}
+                    catch(const OperationCanceled&){metadataAttempted=false;continue;}
                     catch(const winrt::hresult_error& e){fallbackLocal(playback.playbackRate,std::wstring(e.message()));continue;}
                     catch(const std::exception& e){fallbackLocal(playback.playbackRate,wide(e.what()));continue;}
                     // A late async metadata result cannot authorize a query for
                     // a paused session, an old track or a stale music decision.
-                    if(watcher.snapshot().epoch!=epoch||!confirmedMusic())continue;
+                    if(watcher.snapshot().epoch!=epoch||!confirmedMusic()){metadataAttempted=false;continue;}
                     {std::lock_guard<std::mutex> lock(statusMutex);current.track=track;}
                     if(offline){fallbackLocal(playback.playbackRate,L"Modo local sin acceso de red");continue;}
                     if(track.title.empty()||track.artist.empty()){
@@ -181,7 +186,7 @@ struct BeatEngine::Impl {
                 }
                 if(shared.localTempoReady.load()){
                     std::lock_guard<std::mutex> lock(statusMutex);
-                    if(current.lookupState==MusicLookupState::EstimatingBpm){
+                    if(shared.localTempoMode.load()&&(!current.catalog.found||current.catalog.estimated)){
                         current.catalog.found=true;current.catalog.estimated=true;current.catalog.bpm=shared.localTempoBpm.load();current.catalog.matchConfidence=shared.localTempoConfidence.load();
                         current.catalog.source=L"Local";current.catalog.matchedTitle=current.track.title;current.catalog.matchedArtist=current.track.artist;current.lookupState=MusicLookupState::BpmReady;
                     }

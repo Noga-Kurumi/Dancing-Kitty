@@ -75,7 +75,11 @@ class PhaseClock {
     }
 public:
     void reset(){beats.clear();origin=0;started=-1;lastUpdate=-1e9;candidate=candidateSince=-1;lastSupported=-1e9;acquired=confirmed=everLocked=false;quality=agreement=learning=0;evidence=0;outputDivision=1;outputSlot=0;mode=TrackingState::Waiting;plan={};}
-    void setTempoBpm(double value){double next=beatIntervalMs(value)>0?value:0;if(std::abs(next-bpm)>1e-8){bpm=next;period=beatIntervalMs(bpm);reset();}}
+    void setTempoBpm(double value,bool keepObservations=false){
+        double next=beatIntervalMs(value)>0?value:0;if(std::abs(next-bpm)<=1e-8)return;
+        std::deque<RhythmObservation> history;if(keepObservations&&next>0)history.swap(beats);
+        bpm=next;period=beatIntervalMs(bpm);reset();beats.swap(history);
+    }
     void refineTempoBpm(double value,double time){
         double next=beatIntervalMs(value);if(next<=0||!std::isfinite(time))return;
         if(period<=0){setTempoBpm(value);return;}
@@ -85,9 +89,15 @@ public:
         if(plan.valid){plan.origin=origin;plan.period=period;}
     }
     double tempoBpm()const{return bpm;}
-    void beat(double time,float weight){if(beats.empty()||time>beats.back().time+100)beats.push_back({time,std::clamp(weight,.05f,1.f)});}
+    void beat(double time,float weight){
+        if(!std::isfinite(time)||!std::isfinite(weight))return;
+        if(beats.empty()||time>beats.back().time+100)beats.push_back({time,std::clamp(weight,.05f,1.f)});
+        while(beats.size()>128)beats.pop_front();
+    }
     void advance(double time,bool music,bool active){
-        if(period<=0||!music||!active){reset();return;}if(started<0)started=time;
+        if(!music||!active){reset();return;}
+        if(period<=0){while(!beats.empty()&&beats.front().time<time-12000)beats.pop_front();return;}
+        if(started<0)started=time;
         const double history=std::max(8000.,period*6),tolerance=std::min(55.,period*.12);
         while(!beats.empty()&&beats.front().time<time-history)beats.pop_front();
         if(time-lastUpdate<200)return;lastUpdate=time;
