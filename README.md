@@ -26,7 +26,7 @@ Windows media-session events activate output-audio analysis when a compatible pl
 
 A sliding window continuously corrects phase. Catalog BPM stays fixed; local estimates can refine their tempo. Local learning starts as soon as music is confirmed, alongside metadata/catalog requests. Each catalog attempt has a bounded total budget (3 seconds for Deezer, 4.5 seconds for MusicBrainz/AcousticBrainz); it cannot block local learning. Existing rhythmic observations are reused when BPM becomes available, avoiding a second phase-learning window. Confidence requirements are unchanged.
 
-While BPM is still unavailable, an eight-frame gray dotted spinner appears on the cat's forehead at 10 fps. It disappears as soon as a usable catalog or local BPM exists, or music stops.
+While BPM is still unavailable, a large eight-frame gray dotted spinner with white 1-pixel outlines appears on the cat's forehead at 10 fps. The dark centers and white borders keep it visible against the fur. It disappears as soon as a usable catalog or local BPM exists, or music stops.
 
 Frame 1 aligns with each emitted pulse. The animation runs at a standard 25 fps, reaches frame 10 and waits for the next beat. It only speeds up when the beat interval is too short to fit that stroke. Slow songs never create extra halfway loops or double their rhythm. When playback or music detection stops, the current stroke finishes and the cat holds frame 10.
 
